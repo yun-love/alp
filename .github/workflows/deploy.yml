@@ -10,12 +10,12 @@ permissions:
 
 jobs:
   build:
-    [span_4](start_span)runs-on: ubuntu-24.04 # 使用最新的 Ubuntu 环境[span_4](end_span)
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 1. 关键：安装 QEMU 以支持在 64位机器上构建 32位镜像
+      # 1. 安装 QEMU 以支持在 64位机器上构建 32位 (i386) 镜像
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         with:
@@ -24,7 +24,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 2. [span_5](start_span)构建 32位镜像并导出[span_5](end_span)
+      # 2. 构建 32位镜像并导出 rootfs
       - name: Build and Export
         run: |
           docker buildx build --platform linux/386 -t webvm-image --load .
@@ -32,29 +32,24 @@ jobs:
           docker export temp-container > rootfs.tar
           docker rm temp-container
 
-      # 3. 准备前端环境 (从 WebVM 官方获取必要文件)
+      # 3. 准备前端环境并整合镜像
       - name: Prepare Frontend
         run: |
           mkdir dist
-          # 下载 WebVM 官方前端程序，这样你就不需要自己写 HTML 了
+          # 下载 WebVM 官方前端
           curl -L https://github.com/leaningtech/webvm/archive/refs/heads/main.zip -o webvm.zip
           unzip webvm.zip
           cp -r webvm-main/* dist/
-          # 把你的 rootfs.tar 放到 dist 目录
+          # 将 rootfs 放入 dist 并压缩
           mv rootfs.tar dist/
-
-      # 4. 将 tar 转换为 disk 格式 (WebVM 实际上可以直接处理特定打包的 tar 或使用其转换脚本)
-      # 注意：为了简化，我们这里直接使用 gzip 压缩
-      - name: Compress
-        run: |
           cd dist
           gzip -9 rootfs.tar
 
-      # # 5. 部署到 Cloudflare Pages (或者 GitHub Pages)
+      # 4. 部署到 Cloudflare Pages
       # - name: Deploy to Cloudflare Pages
         # uses: cloudflare/pages-action@v1
         # with:
           # apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           # accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          # projectName: your-project-name # 记得改名
+          # projectName: your-project-name
           # directory: dist

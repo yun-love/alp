@@ -1,8 +1,9 @@
-name: Deploy WebVM
+name: Deploy WebVM (Dual Cloud)
 on:
   push:
     branches: [ main ]
 
+# 必须设置权限，否则 GitHub Pages 无法发布
 permissions:
   contents: write
   pages: write
@@ -15,17 +16,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 1. 配置 QEMU 跨架构支持
+      # 1. 跨架构环境准备
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         with:
           platforms: i386
 
-      # 2. 配置 Buildx
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 3. 编译 32 位镜像并导出为 tar (跳过了高危的 nvim 运行，现在构建会非常快)
+      # 2. 构建并导出 32 位系统镜像
       - name: Build and Export rootfs
         run: |
           docker buildx build --platform linux/386 -t webvm-image --load .
@@ -33,26 +33,36 @@ jobs:
           docker export temp-container > rootfs.tar
           docker rm temp-container
 
-      # 4. 下载 WebVM 官方前端框架并压缩镜像
-      - name: Prepare WebVM Frontend
+      # 3. 准备 WebVM 前端并整合镜像
+      - name: Prepare Frontend
         run: |
           mkdir dist
+          # 获取官方前端页面
           curl -L https://github.com/leaningtech/webvm/archive/refs/heads/main.zip -o webvm.zip
           unzip webvm.zip
-          # 将网页文件复制到发布目录
           cp -r webvm-main/* dist/
-          # 将系统镜像放入发布目录并进行极限压缩
-          mv rootfs.tar dist/
-          cd dist
+          # 压缩并移动镜像
           gzip -9 rootfs.tar
-          # 修改 index.html 使其默认加载我们压缩后的 rootfs.tar.gz
+          mv rootfs.tar.gz dist/
+          # 关键：让网页知道去哪里找你的系统包
+          cd dist
           sed -i 's/IMAGE_URL/rootfs.tar.gz/g' index.html || true
 
-      # 5. 部署到 Cloudflare Pages
+      # 4. 【新增】部署到 GitHub Pages
+      - name: Upload artifact for GitHub Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./dist
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      # 5. 部署到 Cloudflare Pages (保留作为备份)
       # - name: Deploy to Cloudflare Pages
         # uses: cloudflare/pages-action@v1
         # with:
           # apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           # accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          # projectName: my-webvm-cpp # ⚠️ 请改成你自己在 Cloudflare 上的项目名称
+          # projectName: my-webvm-cpp
           # directory: dist

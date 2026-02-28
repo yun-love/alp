@@ -33,51 +33,112 @@ jobs:
           gzip -9 rootfs.tar
 
       # 2. 【核心修复】亲手创建一个 index.html，不再依赖官方仓库
-      - name: Create Minimal Frontend
+      - name: Create Functional Frontend
         run: |
           mkdir -p dist
           mv rootfs.tar.gz dist/
           
-          # 创建加载虚拟机的 HTML
           cat <<EOF > dist/index.html
           <!DOCTYPE html>
-          <html>
+          <html lang="zh-CN">
           <head>
               <meta charset="utf-8">
-              <title>My High School Dev Environment</title>
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>WebVM | C++ & pnpm DevEnv</title>
               <script src="https://webvm.io/coi-serviceworker.js"></script>
               <link rel="stylesheet" href="https://webvm.io/xterm/xterm.css">
               <style>
-                  body { margin: 0; background: #000; color: #fff; font-family: monospace; }
-                  #terminal { width: 100vw; height: 100vh; }
+                  body { margin: 0; background-color: #1a1b26; color: #a9b1d6; font-family: 'Fira Code', monospace; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+                  #header { background: #16161e; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #414868; }
+                  #status { font-size: 14px; color: #7aa2f7; }
+                  #terminal-container { flex: 1; position: relative; background: #1a1b26; }
+                  #terminal { width: 100%; height: 100%; }
+                  
+                  /* 启动遮罩层 */
+                  #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(26, 27, 38, 0.95); display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 100; transition: opacity 0.5s; }
+                  .loader { border: 4px solid #414868; border-top: 4px solid #7aa2f7; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin-bottom: 20px; }
+                  @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+                  #loading-text { font-size: 18px; margin-bottom: 10px; }
+                  #progress-bar { width: 300px; height: 10px; background: #414868; border-radius: 5px; overflow: hidden; }
+                  #progress-fill { width: 0%; height: 100%; background: #7aa2f7; transition: width 0.3s; }
+                  .hidden { opacity: 0; pointer-events: none; }
               </style>
           </head>
           <body>
-              <div id="terminal"></div>
+              <div id="header">
+                  <div style="font-weight: bold;">🚀 WebVM</div>
+                  <div id="status">系统准备中...</div>
+              </div>
+
+              <div id="terminal-container">
+                  <div id="overlay">
+                      <div class="loader"></div>
+                      <div id="loading-text">正在下载系统镜像 (rootfs)...</div>
+                      <div id="progress-bar"><div id="progress-fill"></div></div>
+                      <p style="font-size: 12px; color: #565f89; margin-top: 15px;">首次加载较慢，完成后将由浏览器缓存</p>
+                  </div>
+                  <div id="terminal"></div>
+              </div>
+
               <script type="module">
                   import { CyRPX } from "https://webvm.io/cheerpx.js";
+                  
+                  const statusLabel = document.getElementById('status');
+                  const progressFill = document.getElementById('progress-fill');
+                  const overlay = document.getElementById('overlay');
+
                   async function main() {
-                      const cx = await CyRPX.create({
-                          cpu: { model: "i386" },
-                          display: document.getElementById("terminal"),
-                      });
-                      // 加载你刚刚打包好的系统镜像
-                      await cx.run("/bin/bash", ["-l"], {
-                          env: { TERM: "xterm-256color" },
-                          cwd: "/workspace",
-                          filesystem: {
-                              type: "overlay",
-                              layers: [
-                                  { type: "tar", url: "rootfs.tar.gz" }
-                              ]
-                          }
-                      });
+                      try {
+                          statusLabel.innerText = "正在初始化引擎...";
+                          
+                          const cx = await CyRPX.create({
+                              cpu: { model: "i386" },
+                              display: document.getElementById("terminal"),
+                          });
+
+                          statusLabel.innerText = "正在挂载文件系统...";
+                          
+                          await cx.run("/bin/bash", ["-l"], {
+                              env: { TERM: "xterm-256color", USER: "root", HOME: "/root" },
+                              cwd: "/workspace",
+                              filesystem: {
+                                  type: "overlay",
+                                  layers: [
+                                      { 
+                                          type: "tar", 
+                                          url: "rootfs.tar.gz",
+                                          // 模拟进度条（虽然 Fetch API 在某些 CDN 下不返回长度，我们做个模拟）
+                                          onProgress: (done, total) => {
+                                              if (total) {
+                                                  const p = Math.round((done / total) * 100);
+                                                  progressFill.style.width = p + "%";
+                                              } else {
+                                                  // 如果获取不到内容长度，走模拟步进
+                                                  progressFill.style.width = "50%";
+                                              }
+                                          }
+                                      }
+                                  ]
+                              }
+                          });
+
+                          // 启动成功，移除遮罩
+                          statusLabel.innerText = "已就绪";
+                          statusLabel.style.color = "#bb9af7";
+                          overlay.classList.add('hidden');
+
+                      } catch (e) {
+                          statusLabel.innerText = "启动失败: " + e.message;
+                          statusLabel.style.color = "#f7768e";
+                          console.error(e);
+                      }
                   }
                   main();
               </script>
           </body>
           </html>
           EOF
+
 
       # 3. 部署
       - name: Upload artifact for GitHub Pages

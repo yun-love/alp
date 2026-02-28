@@ -18,48 +18,57 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 1. 安装构建工具 genext2fs (用于生成磁盘镜像)
+      # 1. 安装构建 ext2 文件系统的工具
       - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y genext2fs
 
-      # 2. 构建 Docker 并转换为 EXT2 镜像 (这是 WebVM 能运行的关键)
+      # 2. 构建 Docker 并转换为 EXT2 镜像
       - name: Build and Convert to Ext2
         run: |
           mkdir -p dist
           mkdir -p rootfs_temp
 
-          # 2.1 构建基础镜像 (建议使用轻量级的 alpine 或 debian-slim)
+          # 2.1 构建 Docker 镜像
+          # 注意：你的 Dockerfile 内容越多，这里生成的镜像就越大
           docker buildx build --platform linux/386 -t webvm-image --load .
           
-          # 2.2 导出 Docker 文件系统到临时目录
+          # 2.2 导出文件系统
+          echo "正在导出 Docker 文件系统..."
           docker create --name temp-container webvm-image
           docker export temp-container | tar -x -C rootfs_temp
           docker rm temp-container
           
-          # 2.3 修复一些必要的空目录 (CheerpX 需要)
+          # 2.3 补全空目录
           mkdir -p rootfs_temp/proc
           mkdir -p rootfs_temp/dev
           mkdir -p rootfs_temp/tmp
           mkdir -p rootfs_temp/home/user
+          chmod 777 rootfs_temp/tmp
 
-          # 2.4 使用 genext2fs 生成 ext2 磁盘镜像 (分配 512MB 空间，根据需要调整 -b 参数)
-          # -b: 块数量 (524288 = 512MB)
-          # -d: 源目录
-          echo "正在生成 ext2 镜像，这可能需要一点时间..."
-          genext2fs -b 524288 -d rootfs_temp dist/image.ext2
+          # 2.4 【新增】清理垃圾以减小体积
+          echo "正在清理缓存..."
+          rm -rf rootfs_temp/var/cache/apk/* 2>/dev/null || true
+          rm -rf rootfs_temp/var/lib/apt/lists/* 2>/dev/null || true
+          rm -rf rootfs_temp/root/.cache 2>/dev/null || true
+
+          # 2.5 生成 ext2 磁盘镜像
+          # 修改核心：-b 1572864 = 1.5GB 空间
+          # 你的系统约 900MB，需要预留空间，否则会报错 "couldn't allocate a block"
+          echo "正在生成 ext2 镜像 (预设 1.5GB)..."
+          genext2fs -b 1572864 -N 100000 -d rootfs_temp dist/image.ext2
           
-          # 2.5 清理临时文件
+          # 2.6 清理临时目录并检查大小
           rm -rf rootfs_temp
           ls -lh dist/image.ext2
 
-      # 3. 下载 COI Service Worker (解决 SharedArrayBuffer 报错)
+      # 3. 下载 COI Service Worker (解决浏览器 SharedArrayBuffer 限制)
       - name: Download Helpers
         run: |
           wget https://raw.githubusercontent.com/gzuidhof/coi-serviceworker/master/coi-serviceworker.js -O dist/coi-serviceworker.js
 
-      # 4. 生成前端页面
+      # 4. 生成前端页面 (index.html)
       - name: Create Frontend
         run: |
           cat <<EOF > dist/index.html
@@ -68,72 +77,67 @@ jobs:
           <head>
               <meta charset="utf-8">
               <meta name="viewport" content="width=device-width, initial-scale=1.0">
-              <title>WebVM | Linux in Browser</title>
+              <title>WebVM | Linux Environment</title>
               
-              <!-- 1. 必须最先加载 Service Worker 补丁 -->
+              <!-- 1. 跨域隔离补丁 (必须在最前) -->
               <script src="coi-serviceworker.js"></script>
 
-              <!-- 2. Xterm 终端样式 -->
+              <!-- 2. 样式 -->
               <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
-              
               <style>
                   body { margin: 0; background: #000; height: 100vh; display: flex; flex-direction: column; overflow: hidden; font-family: monospace; }
                   #terminal { flex: 1; width: 100%; }
-                  
-                  /* 启动遮罩 */
                   #overlay { 
                       position: absolute; inset: 0; background: #0d1117; z-index: 999; 
-                      display: flex; flex-direction: column; align-items: center; justify-content: center; color: #fff;
+                      display: flex; flex-direction: column; align-items: center; justify-content: center; color: #c9d1d9;
                   }
-                  .progress-box { width: 300px; height: 6px; background: #333; border-radius: 3px; margin: 20px 0; overflow: hidden; }
-                  .bar { height: 100%; background: #238636; width: 0%; transition: width 0.2s; }
-                  #log { color: #8b949e; font-size: 14px; margin-top: 10px; font-family: Consolas, monospace; }
+                  .progress-container { width: 300px; background: #30363d; height: 6px; border-radius: 3px; margin: 20px 0; overflow: hidden; }
+                  .progress-bar { height: 100%; background: #238636; width: 0%; transition: width 0.2s; }
+                  #status-text { font-size: 14px; color: #8b949e; margin-bottom: 5px; }
                   .hidden { opacity: 0; pointer-events: none; transition: opacity 0.5s; }
               </style>
           </head>
           <body>
               <div id="overlay">
-                  <h2 style="margin:0">🚀 WebVM 启动器</h2>
-                  <div class="progress-box"><div class="bar" id="p-bar"></div></div>
-                  <div id="log">正在初始化...</div>
+                  <h2>🚀 WebVM 正在启动</h2>
+                  <div id="status-text">准备下载系统镜像...</div>
+                  <div class="progress-container"><div class="progress-bar" id="p-bar"></div></div>
+                  <div style="font-size: 12px; color: #484f58">镜像较大 (~1GB)，首次加载请耐心等待</div>
               </div>
               
               <div id="terminal"></div>
 
-              <!-- 3. 加载 Xterm 库 -->
+              <!-- 3. 依赖库 -->
               <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
               <script src="https://cdn.jsdelivr.net/npm/xterm-pty@0.9.4/index.js"></script>
 
-              <!-- 4. 核心逻辑：使用 module 方式导入以解决 "not defined" 问题 -->
+              <!-- 4. 核心逻辑 -->
               <script type="module">
-                  // 使用 WebVM 官方的构建版本，它通常更稳定
                   import CheerpX from 'https://webvm.io/cheerpx.js';
 
-                  const logEl = document.getElementById('log');
+                  const statusEl = document.getElementById('status-text');
                   const barEl = document.getElementById('p-bar');
                   const overlay = document.getElementById('overlay');
 
-                  async function run() {
+                  async function startSystem() {
                       try {
-                          // --- 第一步：初始化终端 ---
+                          // 初始化 Xterm
                           const term = new Terminal({ 
-                              theme: { background: '#0d1117' }, 
-                              convertEol: true,
-                              cursorBlink: true
+                              theme: { background: '#0d1117', foreground: '#c9d1d9' }, 
+                              convertEol: true, cursorBlink: true 
                           });
                           const fitAddon = { fit: () => { term.resize(Math.floor(window.innerWidth / 9), Math.floor(window.innerHeight / 17)); } };
                           term.open(document.getElementById('terminal'));
                           fitAddon.fit();
                           window.addEventListener('resize', () => fitAddon.fit());
                           
-                          term.write('欢迎使用 WebVM! \r\n');
+                          term.write('WebVM Bootloader v1.0\r\n');
 
-                          // --- 第二步：下载镜像 (显示进度条) ---
-                          logEl.innerText = "正在下载 ext2 磁盘镜像 (可能较大)...";
+                          // 下载大文件 image.ext2
+                          statusEl.innerText = "正在下载系统磁盘 (image.ext2)...";
                           
-                          // 使用 fetch 手动下载以获取进度
                           const response = await fetch('image.ext2');
-                          if (!response.ok) throw new Error("镜像下载失败: " + response.statusText);
+                          if (!response.ok) throw new Error("下载失败: " + response.statusText);
                           
                           const contentLength = response.headers.get('content-length');
                           const total = parseInt(contentLength, 10);
@@ -150,48 +154,34 @@ jobs:
                               if(total) {
                                   const pct = Math.round((loaded / total) * 100);
                                   barEl.style.width = pct + "%";
-                                  logEl.innerText = \`下载中 \${pct}% (\${(loaded/1024/1024).toFixed(1)} MB)\`;
+                                  statusEl.innerText = \`下载中... \${pct}% (\${(loaded/1024/1024).toFixed(0)}MB / \${(total/1024/1024).toFixed(0)}MB)\`;
                               }
                           }
-                          
-                          logEl.innerText = "正在准备数据...";
-                          const blob = new Blob(chunks);
-                          // 将 Blob 转换为 ArrayBuffer
-                          const imageBuffer = await blob.arrayBuffer();
 
-                          // --- 第三步：初始化 CheerpX 引擎 ---
-                          logEl.innerText = "启动虚拟机内核...";
-                          
-                          // 创建 Linux 实例
-                          // 这里使用 WebVM 专用的 IDBDevice 或者 Overlay 很难配置，
-                          // 我们使用最基础的 DataDevice 注入下载的 ArrayBuffer
+                          statusEl.innerText = "正在解压并挂载内存...";
+                          // 合并数据块
+                          const blob = new Blob(chunks);
+                          const buffer = await blob.arrayBuffer();
+
+                          // 启动 CheerpX
+                          statusEl.innerText = "启动 Linux 内核...";
                           const cx = await CheerpX.Linux.create({
                               mounts: [
                                   { type: "cheerpOS", mountPoint: "/proc" },
                                   { type: "cheerpOS", mountPoint: "/dev" },
-                                  // 将我们下载的 Buffer 挂载为根目录 /
-                                  { type: "ext2", mountPoint: "/", buffer: imageBuffer }
+                                  { type: "ext2", mountPoint: "/", buffer: buffer }
                               ]
                           });
-                          
-                          // --- 第四步：连接终端并运行 ---
-                          logEl.innerText = "系统启动中...";
-                          
-                          // 桥接 Xterm 和 CheerpX
+
+                          // 连接控制台
                           cx.setConsole(term.write.bind(term));
                           
-                          // 处理输入：简单的将按键发送给 cx
-                          // 注意：在复杂的交互中可能需要 xterm-pty，这里做最简处理
-                          term.onData((data) => {
-                              // CheerpX 现在的 API 可能会自动处理 stdin，
-                              // 如果不响应键盘，可能需要 cx.stdin.write(data) 之类的操作
-                              // 但通常 cx.run 配合 setConsole 会处理大部分输出
-                          });
-
+                          // 隐藏遮罩
                           overlay.classList.add('hidden');
-                          
-                          // 启动 Bash
-                          // 确保你的 Docker 镜像里有 /bin/bash，如果没有(如alpine)，请改为 /bin/sh
+                          term.focus();
+
+                          // 运行 Shell
+                          // 尝试运行 bash，如果镜像里没有 bash 则回退到 sh
                           await cx.run("/bin/sh", ["-l"], {
                               env: {
                                   HOME: "/root",
@@ -200,27 +190,24 @@ jobs:
                               }
                           });
                           
-                          term.write('\r\n\x1b[31mShell 已退出。\x1b[m\r\n');
+                          term.write('\r\n\x1b[31mSystem Halted.\x1b[m\r\n');
 
                       } catch (e) {
                           console.error(e);
-                          logEl.innerText = "错误: " + e.message;
-                          logEl.style.color = "#ff6b6b";
-                          
-                          if (e.message.includes("defined") || e.message.includes("import")) {
-                              alert("浏览器不兼容或脚本加载失败。请尝试使用最新版 Chrome/Edge。");
-                          }
+                          statusEl.innerText = "启动失败: " + e.message;
+                          statusEl.style.color = "#ff7b72";
+                          alert("错误: " + e.message);
                       }
                   }
                   
-                  run();
+                  startSystem();
               </script>
           </body>
           </html>
           EOF
 
-      # 5. 部署
-      - name: Upload artifact for GitHub Pages
+      # 5. 部署到 GitHub Pages
+      - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./dist

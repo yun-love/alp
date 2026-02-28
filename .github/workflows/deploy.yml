@@ -1,9 +1,8 @@
-name: Deploy WebVM (Dual Cloud)
+name: Deploy WebVM
 on:
   push:
     branches: [ main ]
 
-# 必须设置权限，否则 GitHub Pages 无法发布
 permissions:
   contents: write
   pages: write
@@ -16,7 +15,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 1. 跨架构环境准备
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         with:
@@ -25,30 +23,63 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 2. 构建并导出 32 位系统镜像
+      # 1. 构建镜像并导出
       - name: Build and Export rootfs
         run: |
           docker buildx build --platform linux/386 -t webvm-image --load .
           docker create --name temp-container webvm-image
           docker export temp-container > rootfs.tar
           docker rm temp-container
-
-      # 3. 准备 WebVM 前端并整合镜像
-      - name: Prepare Frontend
-        run: |
-          mkdir dist
-          # 获取官方前端页面
-          curl -L https://github.com/leaningtech/webvm/archive/refs/heads/main.zip -o webvm.zip
-          unzip webvm.zip
-          cp -r webvm-main/* dist/
-          # 压缩并移动镜像
           gzip -9 rootfs.tar
-          mv rootfs.tar.gz dist/
-          # 关键：让网页知道去哪里找你的系统包
-          cd dist
-          sed -i 's/IMAGE_URL/rootfs.tar.gz/g' index.html || true
 
-      # 4. 【新增】部署到 GitHub Pages
+      # 2. 【核心修复】亲手创建一个 index.html，不再依赖官方仓库
+      - name: Create Minimal Frontend
+        run: |
+          mkdir -p dist
+          mv rootfs.tar.gz dist/
+          
+          # 创建加载虚拟机的 HTML
+          cat <<EOF > dist/index.html
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <meta charset="utf-8">
+              <title>My High School Dev Environment</title>
+              <script src="https://webvm.io/coi-serviceworker.js"></script>
+              <link rel="stylesheet" href="https://webvm.io/xterm/xterm.css">
+              <style>
+                  body { margin: 0; background: #000; color: #fff; font-family: monospace; }
+                  #terminal { width: 100vw; height: 100vh; }
+              </style>
+          </head>
+          <body>
+              <div id="terminal"></div>
+              <script type="module">
+                  import { CyRPX } from "https://webvm.io/cheerpx.js";
+                  async function main() {
+                      const cx = await CyRPX.create({
+                          cpu: { model: "i386" },
+                          display: document.getElementById("terminal"),
+                      });
+                      // 加载你刚刚打包好的系统镜像
+                      await cx.run("/bin/bash", ["-l"], {
+                          env: { TERM: "xterm-256color" },
+                          cwd: "/workspace",
+                          filesystem: {
+                              type: "overlay",
+                              layers: [
+                                  { type: "tar", url: "rootfs.tar.gz" }
+                              ]
+                          }
+                      });
+                  }
+                  main();
+              </script>
+          </body>
+          </html>
+          EOF
+
+      # 3. 部署
       - name: Upload artifact for GitHub Pages
         uses: actions/upload-pages-artifact@v3
         with:
@@ -57,12 +88,3 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
-
-      # 5. 部署到 Cloudflare Pages (保留作为备份)
-      # - name: Deploy to Cloudflare Pages
-        # uses: cloudflare/pages-action@v1
-        # with:
-          # apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          # accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          # projectName: my-webvm-cpp
-          # directory: dist

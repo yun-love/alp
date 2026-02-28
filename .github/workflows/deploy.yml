@@ -1,0 +1,32 @@
+name: Deploy WebVM
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker Image
+        run: docker build -t my-cpp-env .
+
+      - name: Extract Rootfs
+        run: |
+          docker run --name temp-container my-cpp-env /bin/true
+          # 导出并转换为 WebVM disk 格式 (需要使用 cheerpx 提供的工具或特定脚本)
+          # 这里简写逻辑：通常使用 webvm-builder 或类似 action
+          docker export temp-container > rootfs.tar
+          # 假设你使用的是 WebVM 官方提供的转换逻辑
+          
+      - name: Gzip Compress Disk
+        run: |
+          # 关键：极致压缩，减少机房下载流量
+          gzip -9 rootfs.disk
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist # 确保这里包含了 webvm 的前端 index.html 和你的 .disk.gz

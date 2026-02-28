@@ -6,7 +6,7 @@ RUN apk add --no-cache \
     git neovim ripgrep fd unzip curl nodejs npm bash build-base
 
 # 2. 安装 pnpm
-RUN npm install -g pnpm && ln -s /usr/local/bin/pnpm /usr/local/bin/pnpx
+RUN npm install -g pnpm
 
 # 3. 预设 Neovim 环境
 RUN mkdir -p /root/.config/nvim
